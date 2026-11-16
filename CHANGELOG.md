@@ -1,5 +1,10 @@
 # Registro de cambios
 
+## 1.13.13
+
+- Álbum oculto: mueve fotos y vídeos seleccionados (Android 11 o posterior) a un almacenamiento privado cifrado, protegido con huella y con confirmación de Android. Toca dos veces Papelera para abrirlo y restaura el contenido cuando quieras.
+- La galería ahora puede abrir fotos y vídeos desde otras aplicaciones y permite establecerse como visor predeterminado.
+
 ## 1.13.12
 
 - La app ya no solicita acceso a Internet ni descarga actualizaciones o imágenes remotas.

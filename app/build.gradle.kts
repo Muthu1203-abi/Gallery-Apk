@@ -23,8 +23,8 @@ android {
         applicationId = "com.GalleryYou.Pixel"
         minSdk = 26
         targetSdk = 35
-        versionCode = 35
-        versionName = "1.13.12"
+        versionCode = 36
+        versionName = "1.13.13"
     }
 
     signingConfigs {
