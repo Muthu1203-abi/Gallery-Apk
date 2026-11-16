@@ -68,6 +68,7 @@
     <string name="hidden_restore">Restore from hidden album</string>
     <string name="hidden_restore_failed">Couldn\'t restore the selected media</string>
     <string name="hidden_open_failed">Couldn\'t unlock the hidden album</string>
+    <string name="hidden_partial_load_failed">Some hidden media could not be loaded</string>
     <string name="hidden_move_success">Moved to the hidden album</string>
     <string name="move_needs_android11">Moving between albums requires Android 11 or later</string>
     <string name="move_to_album">Move to album</string>

@@ -1,5 +1,9 @@
 # Registro de cambios
 
+## 1.13.14
+
+- Álbum oculto más rápido: muestra cada elemento en cuanto se descifra, empieza por los archivos más pequeños y borra la caché descifrada en segundo plano para evitar bloqueos al cerrarlo.
+
 ## 1.13.13
 
 - Álbum oculto: mueve fotos y vídeos seleccionados (Android 11 o posterior) a un almacenamiento privado cifrado, protegido con huella y con confirmación de Android. Toca dos veces Papelera para abrirlo y restaura el contenido cuando quieras.

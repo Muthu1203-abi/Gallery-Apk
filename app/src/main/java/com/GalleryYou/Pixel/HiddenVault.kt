@@ -26,10 +26,19 @@ import javax.crypto.CipherOutputStream
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 object HiddenVault {
     private const val KEY_ALIAS = "pixel_gallery_hidden_album"
     private const val IV_SIZE = 12
+    private val cacheMutex = Mutex()
+    private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     fun store(context: Context, items: List<MediaFile>): List<MediaFile> {
         val stored = ArrayList<MediaFile>(items.size)
@@ -52,41 +61,71 @@ object HiddenVault {
         return stored
     }
 
-    fun unlock(context: Context): List<MediaFile> {
-        clearDecryptedCache(context)
+    suspend fun unlock(
+        context: Context,
+        onItemReady: (MediaFile) -> Unit = {},
+    ): List<MediaFile> = cacheMutex.withLock {
+        withContext(Dispatchers.IO) { clearDecryptedCache(context) }
         val folder = vaultDirectory(context)
-        val metadataFiles = folder.listFiles { file -> file.extension == "meta" } ?: return emptyList()
-        val key = getKey()
-        val cache = decryptedDirectory(context).apply { if (!exists() && !mkdirs()) throw IOException("Could not create hidden media cache") }
-
-        return metadataFiles.sortedBy { it.name }.map { metadataFile ->
-            val properties = Properties()
-            FileInputStream(metadataFile).use { properties.load(it) }
-            val id = metadataFile.nameWithoutExtension
-            val mime = properties.getProperty("mime") ?: throw IOException("Hidden media metadata is missing")
-            val isVideo = mime.startsWith("video/")
-            if (!isVideo && !mime.startsWith("image/")) throw IOException("Hidden media type is invalid")
-            val extension = MimeTypeMap.getSingleton().getExtensionFromMimeType(mime) ?: "bin"
-            val output = File(cache, "$id.$extension")
-            decrypt(File(folder, "$id.enc"), output, key)
-            MediaFile(
-                id = properties.getProperty("id")?.toLongOrNull() ?: -1L,
-                uri = Uri.fromFile(output),
-                isVideo = isVideo,
-                name = properties.getProperty("name") ?: output.name,
-                dateMillis = properties.getProperty("dateMillis")?.toLongOrNull() ?: 0L,
-                durationMs = properties.getProperty("durationMs")?.toLongOrNull() ?: 0L,
-                size = properties.getProperty("size")?.toLongOrNull() ?: output.length(),
-                width = properties.getProperty("width")?.toIntOrNull() ?: 0,
-                height = properties.getProperty("height")?.toIntOrNull() ?: 0,
-                mime = mime,
-                bucketId = properties.getProperty("bucketId")?.toLongOrNull() ?: 0L,
-                bucket = properties.getProperty("bucket") ?: "",
-                relativePath = properties.getProperty("relativePath") ?: "",
-                canModify = false,
-                vaultId = id,
-            )
+        val entries = withContext(Dispatchers.IO) {
+            folder.listFiles { file -> file.extension == "meta" }
+                ?.map { metadataFile ->
+                    val properties = Properties()
+                    FileInputStream(metadataFile).use { properties.load(it) }
+                    val mime = properties.getProperty("mime")
+                        ?: throw IOException("Hidden media metadata is missing")
+                    val isVideo = mime.startsWith("video/")
+                    if (!isVideo && !mime.startsWith("image/")) {
+                        throw IOException("Hidden media type is invalid")
+                    }
+                    VaultEntry(
+                        id = metadataFile.nameWithoutExtension,
+                        properties = properties,
+                        mime = mime,
+                        isVideo = isVideo,
+                        size = properties.getProperty("size")?.toLongOrNull() ?: Long.MAX_VALUE,
+                    )
+                }
+                ?.sortedWith(compareBy<VaultEntry> { it.size }.thenBy { it.isVideo })
+                ?: emptyList()
         }
+        if (entries.isEmpty()) return@withLock emptyList()
+
+        val key = withContext(Dispatchers.IO) { getKey() }
+        val cache = withContext(Dispatchers.IO) {
+            decryptedDirectory(context).apply {
+                if (!exists() && !mkdirs()) throw IOException("Could not create hidden media cache")
+            }
+        }
+        val unlocked = ArrayList<MediaFile>(entries.size)
+        entries.forEach { entry ->
+            val item = withContext(Dispatchers.IO) {
+                val properties = entry.properties
+                val extension = MimeTypeMap.getSingleton().getExtensionFromMimeType(entry.mime) ?: "bin"
+                val output = File(cache, "${entry.id}.$extension")
+                decrypt(File(vaultDirectory(context), "${entry.id}.enc"), output, key)
+                MediaFile(
+                    id = properties.getProperty("id")?.toLongOrNull() ?: -1L,
+                    uri = Uri.fromFile(output),
+                    isVideo = entry.isVideo,
+                    name = properties.getProperty("name") ?: output.name,
+                    dateMillis = properties.getProperty("dateMillis")?.toLongOrNull() ?: 0L,
+                    durationMs = properties.getProperty("durationMs")?.toLongOrNull() ?: 0L,
+                    size = properties.getProperty("size")?.toLongOrNull() ?: output.length(),
+                    width = properties.getProperty("width")?.toIntOrNull() ?: 0,
+                    height = properties.getProperty("height")?.toIntOrNull() ?: 0,
+                    mime = entry.mime,
+                    bucketId = properties.getProperty("bucketId")?.toLongOrNull() ?: 0L,
+                    bucket = properties.getProperty("bucket") ?: "",
+                    relativePath = properties.getProperty("relativePath") ?: "",
+                    canModify = false,
+                    vaultId = entry.id,
+                )
+            }
+            unlocked += item
+            onItemReady(item)
+        }
+        unlocked
     }
 
     fun restore(context: Context, items: List<MediaFile>): Int {
@@ -104,7 +143,15 @@ object HiddenVault {
         items.mapNotNull { it.vaultId }.forEach { removeStored(context, it) }
     }
 
-    fun clearDecryptedCache(context: Context) {
+    fun clearDecryptedCacheAsync(context: Context) {
+        cleanupScope.launch {
+            cacheMutex.withLock {
+                clearDecryptedCache(context)
+            }
+        }
+    }
+
+    private fun clearDecryptedCache(context: Context) {
         val cache = decryptedDirectory(context)
         if (cache.exists() && !cache.deleteRecursively()) {
             Log.e("HiddenVault", "Could not clear decrypted hidden media cache")
@@ -242,4 +289,12 @@ object HiddenVault {
 
     private fun vaultDirectory(context: Context) = File(context.noBackupFilesDir, "hidden_album")
     private fun decryptedDirectory(context: Context) = File(context.cacheDir, "hidden_album_unlocked")
+
+    private data class VaultEntry(
+        val id: String,
+        val properties: Properties,
+        val mime: String,
+        val isVideo: Boolean,
+        val size: Long,
+    )
 }

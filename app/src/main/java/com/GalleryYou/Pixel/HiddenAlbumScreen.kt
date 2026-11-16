@@ -6,6 +6,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -26,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
@@ -47,18 +49,24 @@ fun HiddenAlbumScreen(
     var items by remember { mutableStateOf<List<MediaFile>?>(null) }
     var selected by remember { mutableStateOf<Set<android.net.Uri>>(emptySet()) }
     var loadingError by remember { mutableStateOf(false) }
+    var loading by remember { mutableStateOf(true) }
     val activity = remember(context) { context.findActivity() as? LifecycleOwner }
     val window = remember(context) { context.findActivity()?.window }
 
     LaunchedEffect(Unit) {
         try {
-            items = withContext(Dispatchers.IO) { HiddenVault.unlock(context) }
+            items = emptyList()
+            items = HiddenVault.unlock(context) { item ->
+                items = items.orEmpty() + item
+            }
         } catch (e: IOException) {
             loadingError = true
         } catch (e: GeneralSecurityException) {
             loadingError = true
         } catch (e: SecurityException) {
             loadingError = true
+        } finally {
+            loading = false
         }
     }
 
@@ -75,7 +83,7 @@ fun HiddenAlbumScreen(
             if (window != null && !originalSecureFlag) {
                 window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
             }
-            HiddenVault.clearDecryptedCache(context)
+            HiddenVault.clearDecryptedCacheAsync(context)
         }
     }
 
@@ -90,7 +98,12 @@ fun HiddenAlbumScreen(
             try {
                 val restored = withContext(Dispatchers.IO) { HiddenVault.restore(context, picked) }
                 selected = emptySet()
-                items = withContext(Dispatchers.IO) { HiddenVault.unlock(context) }
+                items = emptyList()
+                loadingError = false
+                loading = true
+                items = HiddenVault.unlock(context) { item ->
+                    items = items.orEmpty() + item
+                }
                 Toast.makeText(
                     context,
                     if (restored > 0) context.getString(R.string.toast_restored)
@@ -101,6 +114,10 @@ fun HiddenAlbumScreen(
                 Toast.makeText(context, context.getString(R.string.hidden_restore_failed), Toast.LENGTH_SHORT).show()
             } catch (e: SecurityException) {
                 Toast.makeText(context, context.getString(R.string.hidden_restore_failed), Toast.LENGTH_SHORT).show()
+            } catch (e: GeneralSecurityException) {
+                Toast.makeText(context, context.getString(R.string.hidden_restore_failed), Toast.LENGTH_SHORT).show()
+            } finally {
+                loading = false
             }
         }
     }
@@ -121,6 +138,14 @@ fun HiddenAlbumScreen(
             } else {
                 TopAppBar(
                     title = { Text(stringResource(R.string.hidden_album)) },
+                    actions = {
+                        if (loading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.padding(end = 16.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        }
+                    },
                     navigationIcon = {
                         IconButton(onClick = onClose) {
                             Icon(AppIcons.ArrowBack, contentDescription = stringResource(R.string.cd_back))
@@ -131,35 +156,44 @@ fun HiddenAlbumScreen(
         },
     ) { padding ->
         when {
-            items == null && !loadingError -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            media.isEmpty() && loading && !loadingError -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }
-            loadingError -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            media.isEmpty() && loadingError -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(stringResource(R.string.hidden_open_failed), color = MaterialTheme.colorScheme.error)
             }
-            media.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            media.isEmpty() && !loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(stringResource(R.string.hidden_album_empty))
             }
-            else -> MediaGrid(
-                items = media,
-                padding = PaddingValues(
-                    top = padding.calculateTopPadding(),
-                    bottom = padding.calculateBottomPadding(),
-                ),
-                settings = settings,
-                selected = selected,
-                header = null,
-                onClick = { item, index ->
-                    if (selected.isNotEmpty()) {
+            else -> Box(Modifier.fillMaxSize()) {
+                MediaGrid(
+                    items = media,
+                    padding = PaddingValues(
+                        top = padding.calculateTopPadding(),
+                        bottom = padding.calculateBottomPadding(),
+                    ),
+                    settings = settings,
+                    selected = selected,
+                    header = null,
+                    onClick = { item, index ->
+                        if (selected.isNotEmpty()) {
+                            selected = if (item.uri in selected) selected - item.uri else selected + item.uri
+                        } else {
+                            onOpen(media, index)
+                        }
+                    },
+                    onLongClick = { item ->
                         selected = if (item.uri in selected) selected - item.uri else selected + item.uri
-                    } else {
-                        onOpen(media, index)
-                    }
-                },
-                onLongClick = { item ->
-                    selected = if (item.uri in selected) selected - item.uri else selected + item.uri
-                },
-            )
+                    },
+                )
+                if (loadingError) {
+                    Text(
+                        stringResource(R.string.hidden_partial_load_failed),
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.align(Alignment.TopCenter).padding(8.dp),
+                    )
+                }
+            }
         }
     }
 }
