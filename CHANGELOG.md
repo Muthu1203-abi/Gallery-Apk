@@ -1,5 +1,10 @@
 # Registro de cambios
 
+## 1.13.12
+
+- La app ya no solicita acceso a Internet ni descarga actualizaciones o imágenes remotas.
+- La firma de releases se configura mediante secretos de GitHub Actions; el repositorio no incluye claves privadas ni contraseñas.
+
 ## 1.13.11
 
 - Menos lag al desplazarte por las fotos: cada miniatura ya no carga un animador y una corrutina de pulsación propios (el efecto de hundido al tocar sigue igual), las esquinas solo se animan en modo selección, la insignia de selección solo existe cuando seleccionas y la entrada animada solo se aplica a la primera pantalla en lugar de a cada miniatura nueva que aparece al hacer scroll.
