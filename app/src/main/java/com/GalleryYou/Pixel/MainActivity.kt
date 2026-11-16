@@ -28,9 +28,10 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.provider.MediaStore
+import android.view.ViewConfiguration
 import android.widget.Toast
-import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -84,6 +85,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -94,7 +96,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
@@ -105,14 +110,19 @@ import coil.memory.MemoryCache
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.IOException
 
 /** Shinji, sube al robot de una vez */
 private data class ScreenKey(val kind: Int, val id: Long = 0L)
+data class ExternalMediaRequest(val uri: Uri, val mimeType: String?, val sequence: Long)
 
 private val LightScrim = android.graphics.Color.argb(0xe6, 0xFF, 0xFF, 0xFF)
 private val DarkScrim = android.graphics.Color.argb(0x80, 0x1b, 0x1b, 0x1b)
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
+    private var externalMediaRequest by mutableStateOf<ExternalMediaRequest?>(null)
+    private var externalMediaSequence = 0L
+
     /** Yuji Itadori traga el dedo, y el bug */
     override fun attachBaseContext(newBase: Context) {
         super.attachBaseContext(newBase.withAppLocale())
@@ -120,6 +130,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        updateExternalMediaRequest(intent)
         enableEdgeToEdge()
         val settings = AppSettings(applicationContext)
         applyAppIcon(applicationContext, settings.appIcon)
@@ -140,15 +151,28 @@ class MainActivity : ComponentActivity() {
             GaleriaTheme(settings) {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
                     // Opening de anime: la animación de inicio se coloca por encima de toda la app
-                    StartupGate(settings) { GaleriaApp(settings) }
+                    StartupGate(settings) { GaleriaApp(settings, externalMediaRequest) }
                 }
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        updateExternalMediaRequest(intent)
+    }
+
+    private fun updateExternalMediaRequest(intent: Intent?) {
+        val uri = intent?.takeIf { it.action == Intent.ACTION_VIEW }?.data
+        externalMediaRequest = uri?.let {
+            ExternalMediaRequest(it, intent.type, ++externalMediaSequence)
         }
     }
 }
 
 @Composable
-fun GaleriaApp(settings: AppSettings) {
+fun GaleriaApp(settings: AppSettings, externalMediaRequest: ExternalMediaRequest? = null) {
     val context = LocalContext.current
     val imageLoader = remember {
         ImageLoader.Builder(context)
@@ -226,14 +250,14 @@ fun GaleriaApp(settings: AppSettings) {
                 },
             )
         } else {
-            GalleryRoot(settings)
+            GalleryRoot(settings, externalMediaRequest)
         }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun GalleryRoot(settings: AppSettings) {
+fun GalleryRoot(settings: AppSettings, externalMediaRequest: ExternalMediaRequest? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -268,6 +292,9 @@ fun GalleryRoot(settings: AppSettings) {
     var selected by remember { mutableStateOf<Set<Uri>>(emptySet()) }
     var moveItems by remember { mutableStateOf<List<MediaFile>?>(null) }
     var viewer by remember { mutableStateOf<ViewerRequest?>(null) }
+    var hiddenAlbumUnlocked by remember { mutableStateOf(false) }
+    var lastTrashTap by remember { mutableLongStateOf(0L) }
+    var biometricPrompt by remember { mutableStateOf<BiometricPrompt?>(null) }
     // Edward Elric entra al laboratorio: la foto que se está editando (null = editor cerrado)
     var editing by remember { mutableStateOf<MediaFile?>(null) }
     var lastViewer by remember { mutableStateOf<ViewerRequest?>(null) }
@@ -280,9 +307,104 @@ fun GalleryRoot(settings: AppSettings) {
         if (result.resultCode == Activity.RESULT_OK) pending?.invoke()
         pending = null
     }
+    var pendingHiddenCopies by remember { mutableStateOf<List<MediaFile>?>(null) }
+    val hiddenDeleteLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult(),
+    ) { result ->
+        val copies = pendingHiddenCopies
+        pendingHiddenCopies = null
+        if (result.resultCode == Activity.RESULT_OK) {
+            selected = emptySet()
+            reload++
+            Toast.makeText(context, context.getString(R.string.hidden_move_success), Toast.LENGTH_SHORT).show()
+        } else if (copies != null) {
+            scope.launch {
+                try {
+                    withContext(Dispatchers.IO) { HiddenVault.discard(context, copies) }
+                    Toast.makeText(context, context.getString(R.string.hidden_move_cancelled), Toast.LENGTH_SHORT).show()
+                } catch (e: IOException) {
+                    Toast.makeText(context, context.getString(R.string.hidden_move_failed), Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
 
     fun toast(message: String) {
         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+    }
+
+    fun authenticateHiddenAlbum() {
+        val activity = context.findActivity() as? FragmentActivity ?: run {
+            toast(context.getString(R.string.hidden_album_biometric_unavailable))
+            return
+        }
+        if (BiometricManager.from(activity).canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG) !=
+            BiometricManager.BIOMETRIC_SUCCESS
+        ) {
+            toast(context.getString(R.string.hidden_album_biometric_unavailable))
+            return
+        }
+
+        val promptInfo = BiometricPrompt.PromptInfo.Builder()
+            .setTitle(context.getString(R.string.hidden_album_unlock_title))
+            .setSubtitle(context.getString(R.string.hidden_album_unlock_subtitle))
+            .setNegativeButtonText(context.getString(R.string.action_cancel))
+            .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+            .build()
+        biometricPrompt = BiometricPrompt(
+            activity,
+            ContextCompat.getMainExecutor(activity),
+            object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    hiddenAlbumUnlocked = true
+                }
+
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    toast(errString.toString())
+                }
+            },
+        )
+        biometricPrompt?.authenticate(promptInfo)
+    }
+
+    fun hideSelected(items: List<MediaFile>) {
+        if (items.isEmpty()) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            toast(context.getString(R.string.hidden_move_needs_android11))
+            return
+        }
+        scope.launch {
+            val stored = try {
+                withContext(Dispatchers.IO) { HiddenVault.store(context, items) }
+            } catch (e: IOException) {
+                toast(context.getString(R.string.hidden_move_failed))
+                return@launch
+            }
+            try {
+                val sender = MediaStore.createDeleteRequest(
+                    context.contentResolver,
+                    items.map { it.uri },
+                ).intentSender
+                pendingHiddenCopies = stored
+                hiddenDeleteLauncher.launch(IntentSenderRequest.Builder(sender).build())
+            } catch (e: IllegalArgumentException) {
+                pendingHiddenCopies = null
+                try {
+                    withContext(Dispatchers.IO) { HiddenVault.discard(context, stored) }
+                } catch (cleanupError: IOException) {
+                    toast(context.getString(R.string.hidden_move_failed))
+                }
+                toast(context.getString(R.string.hidden_move_failed))
+            } catch (e: SecurityException) {
+                pendingHiddenCopies = null
+                try {
+                    withContext(Dispatchers.IO) { HiddenVault.discard(context, stored) }
+                } catch (cleanupError: IOException) {
+                    toast(context.getString(R.string.hidden_move_failed))
+                }
+                toast(context.getString(R.string.hidden_move_failed))
+            }
+        }
     }
 
     fun launchRequest(sender: IntentSender, onGranted: () -> Unit) {
@@ -364,6 +486,28 @@ fun GalleryRoot(settings: AppSettings) {
         viewer = request
     }
 
+    var handledExternalSequence by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(externalMediaRequest?.sequence, media) {
+        val incoming = externalMediaRequest ?: return@LaunchedEffect
+        val items = media ?: return@LaunchedEffect
+        if (handledExternalSequence == incoming.sequence) return@LaunchedEffect
+
+        val index = items.indexOfFirst { it.uri == incoming.uri }
+        if (index >= 0) {
+            open(items, index)
+        } else {
+            val externalMedia = withContext(Dispatchers.IO) {
+                MediaRepo.fromUri(context, incoming.uri, incoming.mimeType)
+            }
+            if (externalMedia != null) {
+                open(listOf(externalMedia), 0)
+            } else {
+                toast(context.getString(R.string.media_open_failed))
+            }
+        }
+        handledExternalSequence = incoming.sequence
+    }
+
     val viewerOpen = viewer != null
     LaunchedEffect(viewerOpen) {
         if (viewerOpen) {
@@ -413,6 +557,9 @@ fun GalleryRoot(settings: AppSettings) {
     BackHandler(enabled = selected.isNotEmpty() && tab == 0) { selected = emptySet() }
     BackHandler(enabled = tab >= 2) { tab = 0 }
     BackHandler(enabled = viewer != null) { viewer = null }
+    BackHandler(enabled = hiddenAlbumUnlocked && viewer == null) {
+        hiddenAlbumUnlocked = false
+    }
 
     CompositionLocalProvider(LocalThumbRegistry provides thumbRegistry) {
     Box(Modifier.fillMaxSize()) {
@@ -453,6 +600,7 @@ fun GalleryRoot(settings: AppSettings) {
                 onClearSelection = { selected = emptySet() },
                 onSelectAll = { selected = album.items.map { it.uri }.toSet() },
                 onMove = { moveItems = selectedItems },
+                onHide = { hideSelected(selectedItems) },
                 onTrash = { trashItems(selectedItems) },
             ) }
 
@@ -532,6 +680,9 @@ fun GalleryRoot(settings: AppSettings) {
                                     IconButton(onClick = { moveItems = selectedItems }) {
                                         Icon(AppIcons.Folder, contentDescription = stringResource(R.string.move_to_album))
                                     }
+                                    IconButton(onClick = { hideSelected(selectedItems) }) {
+                                        Icon(AppIcons.Lock, contentDescription = stringResource(R.string.move_to_hidden_album))
+                                    }
                                     IconButton(onClick = { trashItems(selectedItems) }) {
                                         Icon(AppIcons.Trash, contentDescription = stringResource(R.string.move_to_trash))
                                     }
@@ -558,8 +709,21 @@ fun GalleryRoot(settings: AppSettings) {
                             badges = if (trash.isNotEmpty()) mapOf(2 to trash.size) else emptyMap(),
                             tuning = settings.navTuning(),
                             onSelect = {
-                                selected = emptySet()
-                                tab = it
+                                if (it == 2) {
+                                    val now = SystemClock.elapsedRealtime()
+                                    if (lastTrashTap != 0L && now - lastTrashTap <= ViewConfiguration.getDoubleTapTimeout()) {
+                                        lastTrashTap = 0L
+                                        authenticateHiddenAlbum()
+                                    } else {
+                                        lastTrashTap = now
+                                        selected = emptySet()
+                                        tab = it
+                                    }
+                                } else {
+                                    lastTrashTap = 0L
+                                    selected = emptySet()
+                                    tab = it
+                                }
                             },
                         )
                     },
@@ -636,6 +800,17 @@ fun GalleryRoot(settings: AppSettings) {
                 }
             }
         }
+        }
+
+        if (hiddenAlbumUnlocked) {
+            HiddenAlbumScreen(
+                settings = settings,
+                onClose = {
+                    if (viewer?.items?.any { it.vaultId != null } == true) viewer = null
+                    hiddenAlbumUnlocked = false
+                },
+                onOpen = { items, index -> open(items, index) },
+            )
         }
 
         // Alquimia equivalente: algo entra, algo sale
@@ -732,6 +907,7 @@ fun AlbumDetail(
     onClearSelection: () -> Unit,
     onSelectAll: () -> Unit,
     onMove: () -> Unit,
+    onHide: () -> Unit,
     onTrash: () -> Unit,
 ) {
     Scaffold(
@@ -744,6 +920,9 @@ fun AlbumDetail(
                 ) {
                     IconButton(onClick = onMove) {
                         Icon(AppIcons.Folder, contentDescription = stringResource(R.string.move_to_album))
+                    }
+                    IconButton(onClick = onHide) {
+                        Icon(AppIcons.Lock, contentDescription = stringResource(R.string.move_to_hidden_album))
                     }
                     IconButton(onClick = onTrash) {
                         Icon(AppIcons.Trash, contentDescription = stringResource(R.string.move_to_trash))

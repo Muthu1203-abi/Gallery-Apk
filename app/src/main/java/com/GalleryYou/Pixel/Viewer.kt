@@ -454,16 +454,20 @@ fun ViewerScreen(
                         )
                     }
                     // Botones de 44 dp para que quepa el lápiz del editor sin apretar la fecha
-                    if (!current.isVideo && current.expiresMillis == 0L && !current.mime.equals("image/gif", ignoreCase = true)) {
+                    if (current.canModify && !current.isVideo && current.expiresMillis == 0L && !current.mime.equals("image/gif", ignoreCase = true)) {
                         IconButton(onClick = { onEdit(current) }, modifier = Modifier.size(44.dp)) {
                             Icon(AppIcons.Edit, contentDescription = stringResource(R.string.cd_edit))
                         }
                     }
-                    IconButton(onClick = { share(context, current) }, modifier = Modifier.size(44.dp)) {
-                        Icon(AppIcons.Share, contentDescription = stringResource(R.string.cd_share))
+                    if (current.vaultId == null) {
+                        IconButton(onClick = { share(context, current) }, modifier = Modifier.size(44.dp)) {
+                            Icon(AppIcons.Share, contentDescription = stringResource(R.string.cd_share))
+                        }
                     }
-                    IconButton(onClick = { onTrash(current) }, modifier = Modifier.size(44.dp)) {
-                        Icon(AppIcons.Trash, contentDescription = stringResource(R.string.move_to_trash))
+                    if (current.canModify) {
+                        IconButton(onClick = { onTrash(current) }, modifier = Modifier.size(44.dp)) {
+                            Icon(AppIcons.Trash, contentDescription = stringResource(R.string.move_to_trash))
+                        }
                     }
                     IconButton(onClick = { showInfo = true }, modifier = Modifier.size(44.dp)) {
                         Icon(AppIcons.Info, contentDescription = stringResource(R.string.details))

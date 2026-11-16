@@ -28,6 +28,8 @@ data class MediaFile(
     val bucket: String,
     val relativePath: String = "",
     val expiresMillis: Long = 0L,
+    val canModify: Boolean = true,
+    val vaultId: String? = null,
 )
 
 data class Album(
@@ -110,6 +112,76 @@ object MediaRepo {
             }
         }
         return ok
+    }
+
+    fun fromUri(context: Context, uri: Uri, requestedMime: String?): MediaFile? {
+        val resolver = context.contentResolver
+        val mime = requestedMime?.takeUnless { it.contains('*') }
+            ?: resolver.getType(uri)
+            ?: requestedMime
+            ?: return null
+        val isVideo = mime.startsWith("video/")
+        if (!isVideo && !mime.startsWith("image/")) return null
+
+        var name = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':')
+            ?.takeIf { it.isNotBlank() } ?: "media"
+        var size = 0L
+        var dateMillis = System.currentTimeMillis()
+        var durationMs = 0L
+        var width = 0
+        var height = 0
+        var relativePath = ""
+        var bucketId = 0L
+        var bucket = ""
+
+        val cursor = try {
+            resolver.query(uri, null, null, null, null)
+        } catch (_: SecurityException) {
+            return null
+        } catch (_: IllegalArgumentException) {
+            null
+        }
+        cursor?.use { c ->
+            if (c.moveToFirst()) {
+                fun string(column: String): String? {
+                    val index = c.getColumnIndex(column)
+                    return if (index >= 0 && !c.isNull(index)) c.getString(index) else null
+                }
+                fun long(column: String): Long? {
+                    val index = c.getColumnIndex(column)
+                    return if (index >= 0 && !c.isNull(index)) c.getLong(index) else null
+                }
+
+                name = string(MediaStore.MediaColumns.DISPLAY_NAME)?.takeIf { it.isNotBlank() } ?: name
+                size = long(MediaStore.MediaColumns.SIZE) ?: size
+                dateMillis = long(MediaStore.Images.ImageColumns.DATE_TAKEN)
+                    ?: long(MediaStore.MediaColumns.DATE_ADDED)?.times(1000L)
+                    ?: dateMillis
+                durationMs = long(MediaStore.Video.VideoColumns.DURATION) ?: durationMs
+                width = (long(MediaStore.MediaColumns.WIDTH) ?: width.toLong()).toInt()
+                height = (long(MediaStore.MediaColumns.HEIGHT) ?: height.toLong()).toInt()
+                relativePath = string(MediaStore.MediaColumns.RELATIVE_PATH) ?: relativePath
+                bucketId = long(MediaStore.Images.ImageColumns.BUCKET_ID) ?: bucketId
+                bucket = string(MediaStore.Images.ImageColumns.BUCKET_DISPLAY_NAME) ?: bucket
+            }
+        }
+
+        return MediaFile(
+            id = -1L,
+            uri = uri,
+            isVideo = isVideo,
+            name = name,
+            dateMillis = dateMillis,
+            durationMs = durationMs,
+            size = size,
+            width = width,
+            height = height,
+            mime = mime,
+            bucketId = bucketId,
+            bucket = bucket,
+            relativePath = relativePath,
+            canModify = false,
+        )
     }
 
     private fun query(context: Context, video: Boolean, trashed: Boolean): List<MediaFile> {

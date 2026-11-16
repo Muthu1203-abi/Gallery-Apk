@@ -241,6 +241,13 @@ object AppIcons {
             line("M9,13.4 H15 M12.8,11 L15.2,13.4 L12.8,15.8"),
         )
     }
+    val Lock: ImageVector by lazy {
+        build("Lock",
+            line("M7,10 V7.8 A5,5 0 0 1 17,7.8 V10"),
+            line("M6,10 H18 V20 H6 Z"),
+            line("M12,14 V16"),
+        )
+    }
     val SelectAll: ImageVector by lazy {
         build("SelectAll",
             line("M8.5,4 H15.5 A4.5,4.5 0 0 1 20,8.5 V15.5 A4.5,4.5 0 0 1 15.5,20 H8.5 A4.5,4.5 0 0 1 4,15.5 V8.5 A4.5,4.5 0 0 1 8.5,4 Z"),
