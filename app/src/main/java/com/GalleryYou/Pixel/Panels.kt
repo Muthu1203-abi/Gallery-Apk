@@ -48,7 +48,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.EnterTransition
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Column
@@ -113,20 +112,10 @@ fun SettingsScreen(settings: AppSettings, onBack: () -> Unit) {
     val headerPin = remember { NavPin() }
     val playerPin = remember { NavPin() }
     val density = LocalDensity.current
-    var showAbout by rememberSaveable { mutableStateOf(false) }
-    BackHandler(enabled = showAbout) { showAbout = false }
     var showLanguage by rememberSaveable { mutableStateOf(false) }
     val languageName = AppLanguages.firstOrNull { it.tag == settings.language }?.nativeName
         ?: stringResource(R.string.language_system)
 
-    AnimatedContent(
-        targetState = showAbout,
-        transitionSpec = { sharedAxisX(targetState, settings.animations) },
-        label = "about",
-    ) { about ->
-    if (about) {
-        AboutScreen(onBack = { showAbout = false })
-    } else {
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
@@ -471,22 +460,9 @@ fun SettingsScreen(settings: AppSettings, onBack: () -> Unit) {
                 }
             }
 
-            SettingsGroup(stringResource(R.string.settings_about)) {
-                ListItem(
-                    headlineContent = { Text(stringResource(R.string.app_name)) },
-                    supportingContent = { Text(stringResource(R.string.version_stable, appVersion(context))) },
-                    leadingContent = { Icon(AppIcons.Info, contentDescription = null) },
-                    trailingContent = { Icon(AppIcons.ArrowForward, contentDescription = null) },
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                    modifier = Modifier.pressFeedback().clickable { showAbout = true },
-                )
-            }
-
             Spacer(Modifier.height(16.dp))
             }
         }
-    }
-    }
     }
 
     if (showLanguage) {
